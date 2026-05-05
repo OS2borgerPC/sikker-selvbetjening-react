@@ -96,7 +96,6 @@ function App() {
   const [data, setData] = useState(defaultData);
   const path = defaultPath;
   const [groupsSchema, setGroupsSchema] = useState(null);
-  const [groupVarsSchema, setGroupVarsSchema] = useState(null);
   const [message, setMessage] = useState('Update groups configuration via form');
   const [status, setStatus] = useState({ type: 'idle', text: '' });
   const [validationErrors, setValidationErrors] = useState([]);
@@ -139,7 +138,6 @@ function App() {
         }
 
         setGroupsSchema(schemasResult.groupsSchema);
-        setGroupVarsSchema(schemasResult.groupVarsSchema);
 
         if (fileResponse.status === 404) {
           setData(defaultData);
@@ -189,9 +187,8 @@ function App() {
 
   const handleGroupChange = (updatedGroup) => {
     setData((prev) => {
-      const cleanedGroup = sanitizeGroup(updatedGroup);
       const nextGroups = getGroups(prev).map((group, index) =>
-        index === selectedGroupIndex ? cleanedGroup : group
+        index === selectedGroupIndex ? updatedGroup : group
       );
 
       return {
@@ -406,7 +403,6 @@ function App() {
 
         <p className="schema-hint">
           Active schemas: groups.schema.json and group-vars.schema.json
-          {groupVarsSchema ? '' : ' (loading...)'}
         </p>
 
         {validationErrors.length > 0 ? (
