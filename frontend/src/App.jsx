@@ -394,7 +394,15 @@ function App() {
         </div>
 
         <div className="actions">
-          <button onClick={handleSave} disabled={saveDisabled || status.type === 'loading' || isLoading}>
+          <button
+            type="button"
+            onMouseDown={(event) => {
+              // Keep focus on active field to avoid losing the click during blur-triggered rerenders.
+              event.preventDefault();
+            }}
+            onClick={handleSave}
+            disabled={saveDisabled || status.type === 'loading' || isLoading}
+          >
             {status.type === 'loading' ? 'Saving...' : 'Save to GitHub'}
           </button>
 
