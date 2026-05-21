@@ -63,6 +63,7 @@ const sanitizeGroup = (group) => {
     const desktop = { ...nextGroup.desktop };
 
     if (Array.isArray(desktop.shortcuts_in_menu)) {
+      // Normalize shortcut values and drop empty entries before persisting.
       const cleanedShortcuts = desktop.shortcuts_in_menu
         .map((shortcut) => String(shortcut || '').trim())
         .filter((shortcut) => shortcut.length > 0);
@@ -180,6 +181,7 @@ function App() {
       return;
     }
 
+    // Keep selection in range after add/remove operations.
     if (selectedGroupIndex > groups.length - 1) {
       setSelectedGroupIndex(groups.length - 1);
     }
@@ -221,6 +223,7 @@ function App() {
       const currentGroups = getGroups(prev);
       const insertIndex = selectedGroupIndex + 1;
       const preferredName = `${selectedGroup.name || 'group'}-copy`;
+      // Clone selected group but force a unique slug-like name.
       const clone = {
         ...selectedGroup,
         name: buildUniqueGroupName(currentGroups, preferredName),
@@ -258,6 +261,7 @@ function App() {
   const handleSave = async () => {
     setStatus({ type: 'loading', text: 'Saving to GitHub...' });
     setValidationErrors([]);
+    // Sanitize right before save to avoid noisy form state changes while typing.
     const cleanedData = sanitizeGroupsPayload(data);
     setData(cleanedData);
 

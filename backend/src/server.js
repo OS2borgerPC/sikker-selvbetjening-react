@@ -24,7 +24,11 @@ const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const owner = process.env.GITHUB_OWNER;
 const repo = process.env.GITHUB_REPO;
 const branch = process.env.GITHUB_BRANCH || 'main';
-const schemasPath = process.env.SCHEMAS_PATH || 'schemas';
+const schemaOwner = process.env.GITHUB_SCHEMA_OWNER || 'OS2borgerPC';
+const schemaRepo = process.env.GITHUB_SCHEMA_REPO || 'sikker-selvbetjening';
+const schemaBranch = process.env.GITHUB_SCHEMA_BRANCH || 'main';
+const schemaPath =
+  process.env.GITHUB_SCHEMA_PATH || 'system_files/usr/share/sikker-selvbetjening/schemas';
 
 const createAjv = () => {
   const validator = new Ajv2020({ allErrors: true, strict: false });
@@ -57,12 +61,12 @@ const assertRepoPath = (path) => {
   return null;
 };
 
-const getRepoFile = async (path) => {
+const getGithubFile = async ({ owner: requestOwner, repo: requestRepo, path, ref }) => {
   const response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-    owner,
-    repo,
+    owner: requestOwner,
+    repo: requestRepo,
     path,
-    ref: branch,
+    ref,
   });
 
   if (Array.isArray(response.data)) {
@@ -76,10 +80,28 @@ const getRepoFile = async (path) => {
   };
 };
 
+const getRepoFile = async (path) =>
+  getGithubFile({
+    owner,
+    repo,
+    path,
+    ref: branch,
+  });
+
 const getSchemas = async () => {
   const [groupsSchemaFile, groupVarsSchemaFile] = await Promise.all([
-    getRepoFile(`${schemasPath}/groups.schema.json`),
-    getRepoFile(`${schemasPath}/group-vars.schema.json`),
+    getGithubFile({
+      owner: schemaOwner,
+      repo: schemaRepo,
+      path: `${schemaPath}/groups.schema.json`,
+      ref: schemaBranch,
+    }),
+    getGithubFile({
+      owner: schemaOwner,
+      repo: schemaRepo,
+      path: `${schemaPath}/group-vars.schema.json`,
+      ref: schemaBranch,
+    }),
   ]);
 
   return {

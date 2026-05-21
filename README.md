@@ -44,6 +44,14 @@ Optional values:
 - `GITHUB_BRANCH` (default: `main`)
 - `PORT` (default: `3001`)
 - `FRONTEND_ORIGIN` (default: `http://localhost:5173`)
+- `GITHUB_SCHEMA_OWNER` (default: `OS2borgerPC`)
+- `GITHUB_SCHEMA_REPO` (default: `sikker-selvbetjening`)
+- `GITHUB_SCHEMA_BRANCH` (default: `main`)
+- `GITHUB_SCHEMA_PATH` (default: `system_files/usr/share/sikker-selvbetjening/schemas`)
+
+By default, schemas are fetched from:
+
+- `https://github.com/OS2borgerPC/sikker-selvbetjening/tree/main/system_files/usr/share/sikker-selvbetjening/schemas`
 
 3. Start frontend + backend:
 
