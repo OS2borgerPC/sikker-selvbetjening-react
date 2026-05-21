@@ -44,6 +44,8 @@ Optional values:
 - `GITHUB_BRANCH` (default: `main`)
 - `PORT` (default: `3001`)
 - `FRONTEND_ORIGIN` (default: `http://localhost:5173`)
+- `AVAILABLE_DOMAINS` (default: empty, comma-separated list such as `forvaltning,bibliotek`)
+- `CURRENT_DOMAIN` (default: first available domain or `default`)
 - `GITHUB_SCHEMA_OWNER` (default: `OS2borgerPC`)
 - `GITHUB_SCHEMA_REPO` (default: `sikker-selvbetjening`)
 - `GITHUB_SCHEMA_BRANCH` (default: `main`)

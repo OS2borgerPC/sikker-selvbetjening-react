@@ -29,6 +29,14 @@ const schemaRepo = process.env.GITHUB_SCHEMA_REPO || 'sikker-selvbetjening';
 const schemaBranch = process.env.GITHUB_SCHEMA_BRANCH || 'main';
 const schemaPath =
   process.env.GITHUB_SCHEMA_PATH || 'system_files/usr/share/sikker-selvbetjening/schemas';
+const availableDomains = String(process.env.AVAILABLE_DOMAINS || '')
+  .split(',')
+  .map((domain) => domain.trim())
+  .filter(Boolean);
+const currentDomain =
+  typeof process.env.CURRENT_DOMAIN === 'string' && process.env.CURRENT_DOMAIN.trim()
+    ? process.env.CURRENT_DOMAIN.trim()
+    : availableDomains[0] || 'default';
 
 const createAjv = () => {
   const validator = new Ajv2020({ allErrors: true, strict: false });
@@ -89,7 +97,7 @@ const getRepoFile = async (path) =>
   });
 
 const getSchemas = async () => {
-  const [groupsSchemaFile, groupVarsSchemaFile] = await Promise.all([
+  const [groupsSchemaFile, groupVarsSchemaFile, buildTargetsSchemaFile] = await Promise.all([
     getGithubFile({
       owner: schemaOwner,
       repo: schemaRepo,
@@ -102,11 +110,18 @@ const getSchemas = async () => {
       path: `${schemaPath}/group-vars.schema.json`,
       ref: schemaBranch,
     }),
+    getGithubFile({
+      owner: schemaOwner,
+      repo: schemaRepo,
+      path: `${schemaPath}/build_targets.schema.json`,
+      ref: schemaBranch,
+    }),
   ]);
 
   return {
     groupsSchema: JSON.parse(groupsSchemaFile.content),
     groupVarsSchema: JSON.parse(groupVarsSchemaFile.content),
+    buildTargetsSchema: JSON.parse(buildTargetsSchemaFile.content),
   };
 };
 
@@ -136,10 +151,12 @@ const validateGroupDefaultPrinter = (group, index) => {
 
 const validateGroupsPayload = async (content) => {
   const ajv = createAjv();
-  const { groupsSchema, groupVarsSchema } = await getSchemas();
+  const { groupsSchema, groupVarsSchema, buildTargetsSchema } = await getSchemas();
   const groupsValidator = ajv.compile(groupsSchema);
   const groupVarsValidator = ajv.compile(groupVarsSchema);
+  const buildTargetsValidator = ajv.compile(buildTargetsSchema);
   const validGroups = groupsValidator(content);
+  const validBuildTargets = buildTargetsValidator(content);
   const errors = [];
 
   if (!validGroups && groupsValidator.errors) {
@@ -151,8 +168,38 @@ const validateGroupsPayload = async (content) => {
     );
   }
 
-  if (content && Array.isArray(content.groups)) {
-    content.groups.forEach((group, index) => {
+  if (!validBuildTargets && buildTargetsValidator.errors) {
+    errors.push(
+      ...buildTargetsValidator.errors.map((error) => ({
+        instancePath: error.instancePath,
+        message: error.message,
+      }))
+    );
+  }
+
+  if (content && Array.isArray(content.domains)) {
+    if (availableDomains.length > 0) {
+      const allowedDomains = new Set(availableDomains);
+      content.domains.forEach((domainEntry, domainIndex) => {
+        if (!allowedDomains.has(domainEntry?.domain)) {
+          errors.push({
+            instancePath: `/domains/${domainIndex}/domain`,
+            message: `must be one of configured AVAILABLE_DOMAINS (${availableDomains.join(', ')})`,
+          });
+        }
+      });
+    }
+
+    content.domains.forEach((domainEntry, domainIndex) => {
+      const domainGroups = Array.isArray(domainEntry?.groups) ? domainEntry.groups : [];
+      const domainBuildTargets = Array.isArray(domainEntry?.build_targets)
+        ? domainEntry.build_targets
+        : [];
+      const knownGroupNames = new Set(
+        domainGroups.map((group) => group?.name).filter((name) => typeof name === 'string')
+      );
+
+      domainGroups.forEach((group, groupIndex) => {
       const overlay = {
         desktop: group.desktop,
         printer: group.printer,
@@ -167,14 +214,35 @@ const validateGroupsPayload = async (content) => {
         if (!validOverlay && groupVarsValidator.errors) {
           errors.push(
             ...groupVarsValidator.errors.map((error) => ({
-              instancePath: `/groups/${index}${error.instancePath}`,
+              instancePath: `/domains/${domainIndex}/groups/${groupIndex}${error.instancePath}`,
               message: error.message,
             }))
           );
         }
       }
 
-      errors.push(...validateGroupDefaultPrinter(group, index));
+      const printerErrors = validateGroupDefaultPrinter(group, groupIndex).map((error) => ({
+        ...error,
+        instancePath: error.instancePath.replace(
+          `/groups/${groupIndex}`,
+          `/domains/${domainIndex}/groups/${groupIndex}`
+        ),
+      }));
+      errors.push(...printerErrors);
+      });
+
+      domainBuildTargets.forEach((buildTarget, buildTargetIndex) => {
+        const targetGroups = Array.isArray(buildTarget?.groups) ? buildTarget.groups : [];
+
+        targetGroups.forEach((groupName, groupNameIndex) => {
+          if (!knownGroupNames.has(groupName)) {
+            errors.push({
+              instancePath: `/domains/${domainIndex}/build_targets/${buildTargetIndex}/groups/${groupNameIndex}`,
+              message: `must reference an existing group in domains[${domainIndex}].groups`,
+            });
+          }
+        });
+      });
     });
   }
 
@@ -222,7 +290,7 @@ app.get('/api/file', async (req, res) => {
 app.get('/api/schemas', async (_req, res) => {
   try {
     const schemas = await getSchemas();
-    return res.status(200).json({ ok: true, ...schemas });
+    return res.status(200).json({ ok: true, availableDomains, currentDomain, ...schemas });
   } catch (error) {
     console.error('Failed to fetch schemas from GitHub:', error);
     return res.status(500).json({

@@ -1,23 +1,12 @@
 import { JsonForms } from '@jsonforms/react';
 import { materialCells, materialRenderers } from '@jsonforms/material-renderers';
 import { useEffect, useMemo, useState } from 'react';
+import { JsonFormsDispatch, withJsonFormsLayoutProps } from '@jsonforms/react';
+import { rankWith, uiTypeIs } from '@jsonforms/core';
+import { Accordion, AccordionDetails, AccordionSummary, Grid } from '@mui/material';
+import { ExpandMore } from '@mui/icons-material';
 
 const defaultPath = 'config/groups.yml';
-const defaultData = {
-  groups: [
-    {
-      name: 'new-group',
-    },
-  ],
-};
-
-const getGroups = (payload) => {
-  if (payload && Array.isArray(payload.groups)) {
-    return payload.groups;
-  }
-
-  return [];
-};
 
 const normalizeGroupName = (name) => {
   const value = String(name || '')
@@ -37,20 +26,121 @@ const normalizeGroupName = (name) => {
   return value;
 };
 
-const buildUniqueGroupName = (existingGroups, preferredName = 'new-group') => {
-  const existingNames = new Set(existingGroups.map((group) => group?.name).filter(Boolean));
-  const base = normalizeGroupName(preferredName);
+const normalizeBuildTargetName = (name) => {
+  const value = String(name || '').trim();
+  return value || 'new-target';
+};
 
-  if (!existingNames.has(base)) {
+const normalizeImageName = (name) => {
+  const cleaned = String(name || '')
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (!cleaned) {
+    return 'NewTarget';
+  }
+
+  if (!/^[A-Za-z_]/.test(cleaned)) {
+    return `T_${cleaned}`;
+  }
+
+  return cleaned;
+};
+
+const buildUniqueName = (existingNames, preferredName, normalize) => {
+  const used = new Set(existingNames.filter(Boolean));
+  const base = normalize(preferredName);
+
+  if (!used.has(base)) {
     return base;
   }
 
   let suffix = 2;
-  while (existingNames.has(`${base}-${suffix}`)) {
+  while (used.has(`${base}-${suffix}`)) {
     suffix += 1;
   }
 
   return `${base}-${suffix}`;
+};
+
+const makeDefaultGroup = (preferredName = 'new-group') => ({
+  name: normalizeGroupName(preferredName),
+});
+
+const makeDefaultBuildTarget = (preferredName = 'new-target', groupName = 'new-group') => {
+  const normalizedTargetName = normalizeBuildTargetName(preferredName);
+  return {
+    name: normalizedTargetName,
+    groups: [groupName],
+    image_name: normalizeImageName(normalizedTargetName),
+  };
+};
+
+const createDefaultData = (domainName = 'default') => ({
+  domains: [
+    {
+      domain: domainName,
+      groups: [],
+      build_targets: [],
+    },
+  ],
+});
+
+const ensureEditableDomain = (payload, domainName) => {
+  const activeDomainName = String(domainName || '').trim() || 'default';
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const domains = getDomains(source);
+  let hasCurrentDomain = false;
+
+  const nextDomains = domains.map((domain) => {
+    if (domain?.domain === activeDomainName) {
+      hasCurrentDomain = true;
+    }
+
+    return {
+      ...(domain && typeof domain === 'object' ? domain : {}),
+      groups: getDomainGroups(domain),
+      build_targets: getDomainBuildTargets(domain),
+    };
+  });
+
+  if (!hasCurrentDomain) {
+    nextDomains.push({
+      domain: activeDomainName,
+      groups: [],
+      build_targets: [],
+    });
+  }
+
+  return {
+    ...source,
+    domains: nextDomains,
+  };
+};
+
+const getDomains = (payload) => {
+  if (payload && Array.isArray(payload.domains)) {
+    return payload.domains;
+  }
+
+  return [];
+};
+
+const getDomainGroups = (domain) => {
+  if (domain && Array.isArray(domain.groups)) {
+    return domain.groups;
+  }
+
+  return [];
+};
+
+const getDomainBuildTargets = (domain) => {
+  if (domain && Array.isArray(domain.build_targets)) {
+    return domain.build_targets;
+  }
+
+  return [];
 };
 
 const sanitizeGroup = (group) => {
@@ -81,32 +171,133 @@ const sanitizeGroup = (group) => {
   return nextGroup;
 };
 
-const sanitizeGroupsPayload = (payload) => {
+const sanitizePayload = (payload) => {
   if (!payload || typeof payload !== 'object') {
     return payload;
   }
 
-  const groups = getGroups(payload).map((group) => sanitizeGroup(group));
+  const domains = getDomains(payload).map((domain) => ({
+    ...domain,
+    groups: getDomainGroups(domain).map((group) => sanitizeGroup(group)),
+  }));
+
   return {
     ...payload,
-    groups,
+    domains,
+  };
+};
+
+const CollapsibleGroupLayoutRenderer = withJsonFormsLayoutProps(
+  ({ visible, enabled, uischema, schema, path, renderers, cells, label }) => {
+    const [expanded, setExpanded] = useState(false);
+
+    if (!visible) {
+      return null;
+    }
+
+    const elements = Array.isArray(uischema?.elements) ? uischema.elements : [];
+    if (elements.length === 0) {
+      return null;
+    }
+
+    return (
+      <Accordion
+        disableGutters
+        expanded={expanded}
+        onChange={(_event, isExpanded) => setExpanded(isExpanded)}
+      >
+        <AccordionSummary expandIcon={<ExpandMore />}>
+          {label || ''}
+        </AccordionSummary>
+        <AccordionDetails>
+          <Grid container direction="column" spacing={0}>
+            {elements.map((child, index) => (
+              <Grid key={`${path}-${index}`} size="grow">
+                <JsonFormsDispatch
+                  uischema={child}
+                  schema={schema}
+                  path={path}
+                  enabled={enabled}
+                  renderers={renderers}
+                  cells={cells}
+                />
+              </Grid>
+            ))}
+          </Grid>
+        </AccordionDetails>
+      </Accordion>
+    );
+  }
+);
+
+const collapsibleGroupRendererEntry = {
+  tester: rankWith(3, uiTypeIs('Group')),
+  renderer: CollapsibleGroupLayoutRenderer,
+};
+
+const buildGroupUiSchema = (schema, showRenameField) => {
+  if (!schema || typeof schema !== 'object') {
+    return null;
+  }
+
+  const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
+  const keys = Object.keys(properties);
+  const orderedKeys = ['name', ...keys.filter((key) => key !== 'name')];
+  const elements = orderedKeys
+    .filter((key) => (key === 'name' ? showRenameField : true))
+    .map((key) => ({
+      type: 'Control',
+      scope: `#/properties/${key}`,
+    }));
+
+  return {
+    type: 'VerticalLayout',
+    elements,
   };
 };
 
 function App() {
-  const [data, setData] = useState(defaultData);
+  const [data, setData] = useState(createDefaultData());
   const path = defaultPath;
   const [groupsSchema, setGroupsSchema] = useState(null);
-  const [message, setMessage] = useState('Update groups configuration via form');
+  const [buildTargetsSchema, setBuildTargetsSchema] = useState(null);
+  const [availableDomains, setAvailableDomains] = useState([]);
+  const [currentDomain, setCurrentDomain] = useState('default');
+  const [message, setMessage] = useState('');
   const [status, setStatus] = useState({ type: 'idle', text: '' });
   const [validationErrors, setValidationErrors] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [activeEditorTab, setActiveEditorTab] = useState('groups');
+  const [showRenameField, setShowRenameField] = useState(false);
   const [selectedGroupIndex, setSelectedGroupIndex] = useState(0);
+  const [selectedBuildTargetIndex, setSelectedBuildTargetIndex] = useState(0);
 
-  const groups = useMemo(() => getGroups(data), [data]);
-  const selectedGroup = groups[selectedGroupIndex] || null;
-  const selectedGroupName = selectedGroup?.name || `Group ${selectedGroupIndex + 1}`;
-  const groupItemSchema = groupsSchema?.properties?.groups?.items || null;
+  const domains = useMemo(() => getDomains(data), [data]);
+  const activeDomainIndex = useMemo(() => {
+    if (domains.length === 0) {
+      return -1;
+    }
+
+    const configuredIndex = domains.findIndex((domain) => domain?.domain === currentDomain);
+    if (configuredIndex >= 0) {
+      return configuredIndex;
+    }
+
+    return 0;
+  }, [domains, currentDomain]);
+  const selectedDomain = activeDomainIndex >= 0 ? domains[activeDomainIndex] : null;
+  const domainGroups = useMemo(() => getDomainGroups(selectedDomain), [selectedDomain]);
+  const domainBuildTargets = useMemo(
+    () => getDomainBuildTargets(selectedDomain),
+    [selectedDomain]
+  );
+  const selectedGroup = domainGroups[selectedGroupIndex] || null;
+  const selectedBuildTarget = domainBuildTargets[selectedBuildTargetIndex] || null;
+
+  const domainItemSchema = groupsSchema?.properties?.domains?.items || null;
+  const groupItemSchema = domainItemSchema?.properties?.groups?.items || null;
+  const buildTargetItemSchema = buildTargetsSchema?.properties?.domains?.items?.properties?.build_targets?.items || null;
+
   const groupEditorSchema = useMemo(() => {
     if (!groupItemSchema) {
       return null;
@@ -117,14 +308,34 @@ function App() {
       ...groupItemSchema,
     };
   }, [groupItemSchema, groupsSchema]);
-  const saveDisabled = useMemo(() => !path.trim() || groups.length === 0, [path, groups.length]);
+
+  const buildTargetEditorSchema = useMemo(() => {
+    if (!buildTargetItemSchema) {
+      return null;
+    }
+
+    return {
+      ...buildTargetItemSchema,
+    };
+  }, [buildTargetItemSchema]);
+
+  const renderers = useMemo(
+    () => [collapsibleGroupRendererEntry, ...materialRenderers],
+    []
+  );
+  const groupEditorUiSchema = useMemo(
+    () => buildGroupUiSchema(groupEditorSchema, showRenameField),
+    [groupEditorSchema, showRenameField]
+  );
+
+  const saveDisabled = useMemo(() => !path.trim() || domains.length === 0, [path, domains.length]);
 
   useEffect(() => {
     const controller = new AbortController();
 
     const loadInitialData = async () => {
       setIsLoading(true);
-      setStatus({ type: 'loading', text: 'Loading schema and existing YAML...' });
+      setStatus({ type: 'loading', text: 'Loading schemas and existing YAML...' });
       setValidationErrors([]);
 
       try {
@@ -139,10 +350,22 @@ function App() {
         }
 
         setGroupsSchema(schemasResult.groupsSchema);
+        setBuildTargetsSchema(schemasResult.buildTargetsSchema);
+        setAvailableDomains(
+          Array.isArray(schemasResult.availableDomains) ? schemasResult.availableDomains : []
+        );
+        const nextCurrentDomain =
+          typeof schemasResult.currentDomain === 'string' && schemasResult.currentDomain.trim()
+            ? schemasResult.currentDomain.trim()
+            : 'default';
+        setCurrentDomain(nextCurrentDomain);
 
         if (fileResponse.status === 404) {
-          setData(defaultData);
-          setStatus({ type: 'idle', text: 'groups.yml not found yet. Using a starter object.' });
+          setData(createDefaultData(nextCurrentDomain));
+          setStatus({
+            type: 'idle',
+            text: 'groups.yml not found yet. Using a starter object with one domain.',
+          });
           return;
         }
 
@@ -151,8 +374,9 @@ function App() {
           throw new Error(fileResult.error || 'Failed to load config file');
         }
 
-        setData(fileResult.parsed || defaultData);
+        setData(ensureEditableDomain(fileResult.parsed, nextCurrentDomain));
         setSelectedGroupIndex(0);
+        setSelectedBuildTargetIndex(0);
         setStatus({ type: 'idle', text: 'Loaded config/groups.yml from GitHub.' });
       } catch (error) {
         if (error.name === 'AbortError') {
@@ -161,7 +385,7 @@ function App() {
 
         setStatus({
           type: 'error',
-          text: error.message || 'Failed to load schema/config from GitHub.',
+          text: error.message || 'Failed to load schemas/config from GitHub.',
         });
       } finally {
         setIsLoading(false);
@@ -176,39 +400,77 @@ function App() {
   }, [path]);
 
   useEffect(() => {
-    if (groups.length === 0) {
-      setSelectedGroupIndex(0);
+    if (domains.length === 0) {
+      if (selectedGroupIndex !== 0) {
+        setSelectedGroupIndex(0);
+      }
+      if (selectedBuildTargetIndex !== 0) {
+        setSelectedBuildTargetIndex(0);
+      }
       return;
     }
 
-    // Keep selection in range after add/remove operations.
-    if (selectedGroupIndex > groups.length - 1) {
-      setSelectedGroupIndex(groups.length - 1);
-    }
-  }, [groups.length, selectedGroupIndex]);
+    const currentDomain = activeDomainIndex >= 0 ? domains[activeDomainIndex] : null;
+    const groups = getDomainGroups(currentDomain);
+    const buildTargets = getDomainBuildTargets(currentDomain);
 
-  const handleGroupChange = (updatedGroup) => {
+    // Keep item selections in range after add/remove operations.
+    if (selectedGroupIndex > groups.length - 1) {
+      setSelectedGroupIndex(Math.max(groups.length - 1, 0));
+    }
+
+    if (selectedBuildTargetIndex > buildTargets.length - 1) {
+      setSelectedBuildTargetIndex(Math.max(buildTargets.length - 1, 0));
+    }
+  }, [domains, activeDomainIndex, selectedGroupIndex, selectedBuildTargetIndex]);
+
+  useEffect(() => {
+    setShowRenameField(false);
+  }, [selectedGroupIndex]);
+
+  const updateSelectedDomain = (domainUpdater) => {
     setData((prev) => {
-      const nextGroups = getGroups(prev).map((group, index) =>
-        index === selectedGroupIndex ? updatedGroup : group
-      );
+      const prevDomains = getDomains(prev);
+      if (prevDomains.length === 0) {
+        return prev;
+      }
+
+      const targetDomainIndex = activeDomainIndex >= 0 ? activeDomainIndex : 0;
+      if (targetDomainIndex > prevDomains.length - 1) {
+        return prev;
+      }
 
       return {
         ...prev,
-        groups: nextGroups,
+        domains: prevDomains.map((domain, index) =>
+          index === targetDomainIndex ? domainUpdater(domain) : domain
+        ),
       };
     });
   };
 
+  const handleGroupChange = (updatedGroup) => {
+    updateSelectedDomain((domain) => ({
+      ...domain,
+      groups: getDomainGroups(domain).map((group, index) =>
+        index === selectedGroupIndex ? updatedGroup : group
+      ),
+    }));
+  };
+
   const addGroup = () => {
-    setData((prev) => {
-      const currentGroups = getGroups(prev);
-      const nextName = buildUniqueGroupName(currentGroups);
-      const nextGroups = [...currentGroups, { name: nextName }];
+    updateSelectedDomain((domain) => {
+      const currentGroups = getDomainGroups(domain);
+      const nextGroupName = buildUniqueName(
+        currentGroups.map((group) => group?.name),
+        'new-group',
+        normalizeGroupName
+      );
+      const nextGroups = [...currentGroups, makeDefaultGroup(nextGroupName)];
       setSelectedGroupIndex(nextGroups.length - 1);
 
       return {
-        ...prev,
+        ...domain,
         groups: nextGroups,
       };
     });
@@ -219,50 +481,124 @@ function App() {
       return;
     }
 
-    setData((prev) => {
-      const currentGroups = getGroups(prev);
+    updateSelectedDomain((domain) => {
+      const currentGroups = getDomainGroups(domain);
       const insertIndex = selectedGroupIndex + 1;
       const preferredName = `${selectedGroup.name || 'group'}-copy`;
-      // Clone selected group but force a unique slug-like name.
       const clone = {
         ...selectedGroup,
-        name: buildUniqueGroupName(currentGroups, preferredName),
+        name: buildUniqueName(
+          currentGroups.map((group) => group?.name),
+          preferredName,
+          normalizeGroupName
+        ),
       };
       const nextGroups = [
         ...currentGroups.slice(0, insertIndex),
         clone,
         ...currentGroups.slice(insertIndex),
       ];
+
       setSelectedGroupIndex(insertIndex);
 
       return {
-        ...prev,
+        ...domain,
         groups: nextGroups,
       };
     });
   };
 
   const removeSelectedGroup = () => {
-    if (!selectedGroup || groups.length === 0) {
+    if (!selectedGroup) {
       return;
     }
 
-    setData((prev) => {
-      const currentGroups = getGroups(prev);
-      const nextGroups = currentGroups.filter((_, index) => index !== selectedGroupIndex);
+    updateSelectedDomain((domain) => ({
+      ...domain,
+      groups: getDomainGroups(domain).filter((_, index) => index !== selectedGroupIndex),
+    }));
+  };
+
+  const handleBuildTargetChange = (updatedBuildTarget) => {
+    updateSelectedDomain((domain) => ({
+      ...domain,
+      build_targets: getDomainBuildTargets(domain).map((target, index) =>
+        index === selectedBuildTargetIndex ? updatedBuildTarget : target
+      ),
+    }));
+  };
+
+  const addBuildTarget = () => {
+    updateSelectedDomain((domain) => {
+      const currentTargets = getDomainBuildTargets(domain);
+      const nextTargetName = buildUniqueName(
+        currentTargets.map((target) => target?.name),
+        'new-target',
+        normalizeBuildTargetName
+      );
+      const fallbackGroupName =
+        getDomainGroups(domain)[selectedGroupIndex]?.name || getDomainGroups(domain)[0]?.name || 'new-group';
+      const nextTargets = [...currentTargets, makeDefaultBuildTarget(nextTargetName, fallbackGroupName)];
+      setSelectedBuildTargetIndex(nextTargets.length - 1);
 
       return {
-        ...prev,
-        groups: nextGroups,
+        ...domain,
+        build_targets: nextTargets,
       };
     });
+  };
+
+  const duplicateBuildTarget = () => {
+    if (!selectedBuildTarget) {
+      return;
+    }
+
+    updateSelectedDomain((domain) => {
+      const currentTargets = getDomainBuildTargets(domain);
+      const insertIndex = selectedBuildTargetIndex + 1;
+      const preferredName = `${selectedBuildTarget.name || 'target'}-copy`;
+      const duplicateName = buildUniqueName(
+        currentTargets.map((target) => target?.name),
+        preferredName,
+        normalizeBuildTargetName
+      );
+      const clone = {
+        ...selectedBuildTarget,
+        name: duplicateName,
+        image_name: normalizeImageName(duplicateName),
+      };
+      const nextTargets = [
+        ...currentTargets.slice(0, insertIndex),
+        clone,
+        ...currentTargets.slice(insertIndex),
+      ];
+      setSelectedBuildTargetIndex(insertIndex);
+
+      return {
+        ...domain,
+        build_targets: nextTargets,
+      };
+    });
+  };
+
+  const removeSelectedBuildTarget = () => {
+    if (!selectedBuildTarget) {
+      return;
+    }
+
+    updateSelectedDomain((domain) => ({
+      ...domain,
+      build_targets: getDomainBuildTargets(domain).filter(
+        (_, index) => index !== selectedBuildTargetIndex
+      ),
+    }));
   };
 
   const handleSave = async () => {
     setStatus({ type: 'loading', text: 'Saving to GitHub...' });
     setValidationErrors([]);
     // Sanitize right before save to avoid noisy form state changes while typing.
-    const cleanedData = sanitizeGroupsPayload(data);
+    const cleanedData = sanitizePayload(data);
     setData(cleanedData);
 
     try {
@@ -303,101 +639,209 @@ function App() {
     <main className="app-shell">
       <section className="hero">
         <p className="eyebrow">Schema-Driven Content Ops</p>
-        <h1>Git-backed Groups YAML Editor</h1>
+        <h1>Git-backed Groups and Build Targets Editor</h1>
         <p>
-          Edit config/groups.yml with JSON Forms and validate it against both groups schemas before
-          saving to GitHub.
+          Edit config/groups.yml with domain-scoped groups and build targets, then validate against
+          all active schemas before saving to GitHub.
         </p>
       </section>
 
       <section className="panel">
-        <div className="controls-grid">
-          <label>
-            Repository Path
-            <input value={path} readOnly />
-          </label>
+        <div className="domain-content">
+          <p className="selected-group-title">Domain: {selectedDomain?.domain || 'N/A'}</p>
+          <div className="editor-tabs" role="tablist" aria-label="Editor type">
+            <button
+              type="button"
+              role="tab"
+              className={`editor-tab ${activeEditorTab === 'groups' ? 'active' : ''}`}
+              aria-selected={activeEditorTab === 'groups'}
+              onClick={() => setActiveEditorTab('groups')}
+            >
+              Groups ({domainGroups.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`editor-tab ${activeEditorTab === 'buildTargets' ? 'active' : ''}`}
+              aria-selected={activeEditorTab === 'buildTargets'}
+              onClick={() => setActiveEditorTab('buildTargets')}
+            >
+              Build Targets ({domainBuildTargets.length})
+            </button>
+          </div>
 
-          <label>
-            Commit Message
-            <input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              placeholder="Update via form"
-            />
-          </label>
-        </div>
+            {activeEditorTab === 'groups' ? (
+              <section className="entity-editor">
+                <div className="master-detail">
+                  <div className="group-list-wrap">
+                    <div className="group-list-header">
+                      <h2>Groups</h2>
+                      <span>{domainGroups.length}</span>
+                    </div>
 
-        <div className="group-editor">
-          <aside className="group-list-wrap">
-            <div className="group-list-header">
-              <h2>Groups</h2>
-              <span>{groups.length}</span>
-            </div>
+                    <div className="group-list-actions">
+                      <button type="button" className="secondary" onClick={addGroup} disabled={isLoading}>
+                        Add
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={duplicateGroup}
+                        disabled={isLoading || !selectedGroup}
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary danger"
+                        onClick={removeSelectedGroup}
+                        disabled={isLoading || !selectedGroup}
+                      >
+                        Remove
+                      </button>
+                    </div>
 
-            <div className="group-list-actions">
-              <button type="button" className="secondary" onClick={addGroup} disabled={isLoading}>
-                Add Group
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={duplicateGroup}
-                disabled={isLoading || !selectedGroup}
-              >
-                Duplicate
-              </button>
-              <button
-                type="button"
-                className="secondary danger"
-                onClick={removeSelectedGroup}
-                disabled={isLoading || !selectedGroup}
-              >
-                Remove
-              </button>
-            </div>
+                    <ul className="group-list" aria-label="Group list">
+                      {domainGroups.map((group, index) => {
+                        const groupName = group?.name || `group-${index + 1}`;
+                        const isActive = index === selectedGroupIndex;
 
-            <ul className="group-list" aria-label="Group list">
-              {groups.map((group, index) => {
-                const groupName = group?.name || `group-${index + 1}`;
-                const isActive = index === selectedGroupIndex;
+                        return (
+                          <li key={`${groupName}-${index}`}>
+                            <button
+                              type="button"
+                              className={`group-item ${isActive ? 'active' : ''}`}
+                              onClick={() => setSelectedGroupIndex(index)}
+                            >
+                              <span className="group-item-name">{groupName}</span>
+                              <span className="group-item-index">#{index + 1}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
 
-                return (
-                  <li key={`${groupName}-${index}`}>
+                  <div className="form-wrap">
+                    {isLoading || !groupEditorSchema ? (
+                      <p className="placeholder">Loading groups schema...</p>
+                    ) : !selectedGroup ? (
+                      <p className="placeholder">No groups in this domain yet. Add one to start editing.</p>
+                    ) : (
+                      <>
+                        <div className="selected-group-header">
+                          <p className="selected-group-title">Editing Group: {selectedGroup.name || 'Unnamed'}</p>
+                          <button
+                            type="button"
+                            className="rename-toggle"
+                            onClick={() => setShowRenameField((prev) => !prev)}
+                          >
+                            {showRenameField ? 'Done' : 'Rename'}
+                          </button>
+                        </div>
+                        <JsonForms
+                          schema={groupEditorSchema}
+                          uischema={groupEditorUiSchema || undefined}
+                          data={selectedGroup}
+                          renderers={renderers}
+                          cells={materialCells}
+                          onChange={({ data: updatedGroup }) => handleGroupChange(updatedGroup)}
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <section className="entity-editor">
+                <div className="group-list-wrap">
+                  <div className="group-list-header">
+                    <h2>Build Targets</h2>
+                    <span>{domainBuildTargets.length}</span>
+                  </div>
+
+                  <div className="group-list-actions">
                     <button
                       type="button"
-                      className={`group-item ${isActive ? 'active' : ''}`}
-                      onClick={() => setSelectedGroupIndex(index)}
+                      className="secondary"
+                      onClick={addBuildTarget}
+                      disabled={isLoading}
                     >
-                      <span className="group-item-name">{groupName}</span>
-                      <span className="group-item-index">#{index + 1}</span>
+                      Add
                     </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </aside>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={duplicateBuildTarget}
+                      disabled={isLoading || !selectedBuildTarget}
+                    >
+                      Duplicate
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary danger"
+                      onClick={removeSelectedBuildTarget}
+                      disabled={isLoading || !selectedBuildTarget}
+                    >
+                      Remove
+                    </button>
+                  </div>
 
-          <div className="form-wrap">
-            {isLoading || !groupEditorSchema ? (
-              <p className="placeholder">Loading...</p>
-            ) : !selectedGroup ? (
-              <p className="placeholder">No groups yet. Add one to start editing.</p>
-            ) : (
-              <>
-                <p className="selected-group-title">Editing: {selectedGroupName}</p>
-                <JsonForms
-                  schema={groupEditorSchema}
-                  data={selectedGroup}
-                  renderers={materialRenderers}
-                  cells={materialCells}
-                  onChange={({ data: updatedGroup }) => handleGroupChange(updatedGroup)}
-                />
-              </>
+                  <ul className="group-list" aria-label="Build target list">
+                    {domainBuildTargets.map((target, index) => {
+                      const targetName = target?.name || `target-${index + 1}`;
+                      const isActive = index === selectedBuildTargetIndex;
+
+                      return (
+                        <li key={`${targetName}-${index}`}>
+                          <button
+                            type="button"
+                            className={`group-item ${isActive ? 'active' : ''}`}
+                            onClick={() => setSelectedBuildTargetIndex(index)}
+                          >
+                            <span className="group-item-name">{targetName}</span>
+                            <span className="group-item-index">#{index + 1}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+
+                <div className="form-wrap">
+                  {isLoading || !buildTargetEditorSchema ? (
+                    <p className="placeholder">Loading build target schema...</p>
+                  ) : !selectedBuildTarget ? (
+                    <p className="placeholder">No build targets in this domain yet. Add one to start editing.</p>
+                  ) : (
+                    <>
+                      <p className="selected-group-title">
+                        Editing Build Target: {selectedBuildTarget.name || 'Unnamed'}
+                      </p>
+                      <JsonForms
+                        schema={buildTargetEditorSchema}
+                        data={selectedBuildTarget}
+                        renderers={renderers}
+                        cells={materialCells}
+                        onChange={({ data: updatedTarget }) => handleBuildTargetChange(updatedTarget)}
+                      />
+                    </>
+                  )}
+                </div>
+              </section>
             )}
-          </div>
         </div>
 
         <div className="actions">
+          <label className="commit-inline">
+            <span>Change log entry</span>
+            <input
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder="What did you change?"
+            />
+          </label>
+
           <button
             type="button"
             onMouseDown={(event) => {
@@ -410,11 +854,11 @@ function App() {
             {status.type === 'loading' ? 'Saving...' : 'Save to GitHub'}
           </button>
 
-          <span className={`status ${status.type}`}>{status.text}</span>
+          {status.type !== 'idle' ? <span className={`status ${status.type}`}>{status.text}</span> : null}
         </div>
 
         <p className="schema-hint">
-          Active schemas: groups.schema.json and group-vars.schema.json
+          Active schemas: groups.schema.json, group-vars.schema.json, and build_targets.schema.json
         </p>
 
         {validationErrors.length > 0 ? (
