@@ -1,6 +1,6 @@
 import { JsonForms } from '@jsonforms/react';
 import { materialCells, materialRenderers } from '@jsonforms/material-renderers';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { JsonFormsDispatch, withJsonFormsControlProps, withJsonFormsLayoutProps } from '@jsonforms/react';
 import { isStringControl, optionIs, rankWith, uiTypeIs, and } from '@jsonforms/core';
 import {
@@ -197,6 +197,26 @@ const sanitizePayload = (payload) => {
   };
 };
 
+const collectAssetPaths = (node, collector = new Set()) => {
+  if (typeof node === 'string') {
+    if (node.startsWith('assets/')) {
+      collector.add(node);
+    }
+    return collector;
+  }
+
+  if (Array.isArray(node)) {
+    node.forEach((item) => collectAssetPaths(item, collector));
+    return collector;
+  }
+
+  if (node && typeof node === 'object') {
+    Object.values(node).forEach((value) => collectAssetPaths(value, collector));
+  }
+
+  return collector;
+};
+
 const CollapsibleGroupLayoutRenderer = withJsonFormsLayoutProps(
   ({ visible, enabled, uischema, schema, path, renderers, cells, label }) => {
     const [expanded, setExpanded] = useState(false);
@@ -281,13 +301,27 @@ const FilePathControl = withJsonFormsControlProps(
     const assetPrefix = resolvedPrefix.endsWith('/') ? resolvedPrefix : `${resolvedPrefix}/`;
     const hasErrors = Boolean(errors && errors.length > 0);
 
-    const handleFilePick = (event) => {
+    const handleFilePick = async (event) => {
       const file = event.target.files?.[0];
       if (!file) {
         return;
       }
 
-      handleChange(path, `${assetPrefix}${file.name}`);
+      const assetPath = `${assetPrefix}${file.name}`;
+      const fileBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(fileBuffer);
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      const contentBase64 = btoa(binary);
+
+      if (typeof config?.queueAssetUpload === 'function') {
+        config.queueAssetUpload(assetPath, contentBase64);
+      }
+
+      handleChange(path, assetPath);
       event.target.value = '';
     };
 
@@ -383,6 +417,7 @@ function App() {
   const [status, setStatus] = useState({ type: 'idle', text: '' });
   const [validationErrors, setValidationErrors] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [pendingAssetUploads, setPendingAssetUploads] = useState({});
   const [activeEditorTab, setActiveEditorTab] = useState('groups');
   const [showRenameField, setShowRenameField] = useState(false);
   const [selectedGroupIndex, setSelectedGroupIndex] = useState(0);
@@ -435,13 +470,30 @@ function App() {
     };
   }, [buildTargetItemSchema]);
 
+  const queueAssetUpload = useCallback((assetPath, contentBase64) => {
+    if (!assetPath || !contentBase64) {
+      return;
+    }
+
+    setPendingAssetUploads((prev) => ({
+      ...prev,
+      [assetPath]: {
+        path: assetPath,
+        contentBase64,
+      },
+    }));
+  }, []);
+
   const renderers = useMemo(
     () => [filePathControlRendererEntry, collapsibleGroupRendererEntry, ...materialRenderers],
     []
   );
   const jsonFormsConfig = useMemo(
-    () => ({ currentDomain: selectedDomain?.domain || currentDomain || 'default' }),
-    [selectedDomain, currentDomain]
+    () => ({
+      currentDomain: selectedDomain?.domain || currentDomain || 'default',
+      queueAssetUpload,
+    }),
+    [selectedDomain, currentDomain, queueAssetUpload]
   );
   const groupEditorUiSchema = useMemo(() => {
     const baseUiSchema = groupsUiSchemaTemplate || buildFallbackUiSchema(groupEditorSchema);
@@ -501,6 +553,7 @@ function App() {
         }
 
         setData(ensureEditableDomain(fileResult.parsed, nextCurrentDomain));
+        setPendingAssetUploads({});
         setSelectedGroupIndex(0);
         setSelectedBuildTargetIndex(0);
         setStatus({ type: 'idle', text: 'Loaded config/groups.yml from GitHub.' });
@@ -725,6 +778,10 @@ function App() {
     setValidationErrors([]);
     // Sanitize right before save to avoid noisy form state changes while typing.
     const cleanedData = sanitizePayload(data);
+    const referencedAssetPaths = Array.from(collectAssetPaths(cleanedData));
+    const assets = referencedAssetPaths
+      .map((assetPath) => pendingAssetUploads[assetPath])
+      .filter(Boolean);
     setData(cleanedData);
 
     try {
@@ -737,6 +794,7 @@ function App() {
           path,
           content: cleanedData,
           message,
+          assets,
         }),
       });
 
@@ -749,10 +807,29 @@ function App() {
         throw new Error(result.error || 'Save failed');
       }
 
+      const uploadedAssetCount = Array.isArray(result.uploadedAssets)
+        ? result.uploadedAssets.filter((asset) => !asset?.skipped).length
+        : 0;
+      const uploadedAssetsText =
+        uploadedAssetCount > 0
+          ? ` Uploaded assets: ${uploadedAssetCount}`
+          : '';
+
       setStatus({
         type: 'success',
-        text: `Saved. Commit: ${result.commitSha.slice(0, 7)}`,
+        text: result.commitSha
+          ? `Saved. Commit: ${result.commitSha.slice(0, 7)}.${uploadedAssetsText}`
+          : `Saved.${uploadedAssetsText}`,
       });
+      if (assets.length > 0) {
+        setPendingAssetUploads((prev) => {
+          const next = { ...prev };
+          assets.forEach((asset) => {
+            delete next[asset.path];
+          });
+          return next;
+        });
+      }
     } catch (error) {
       setStatus({
         type: 'error',
@@ -987,7 +1064,7 @@ function App() {
         </div>
 
         <p className="schema-hint">
-          Active schemas: groups.schema.json, group-vars.schema.json, and build_targets.schema.json
+          Active schemas: groups.schema.json and build_targets.schema.json
         </p>
 
         {validationErrors.length > 0 ? (

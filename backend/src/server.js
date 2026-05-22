@@ -100,6 +100,60 @@ const getRepoFile = async (path) =>
     ref: branch,
   });
 
+const getExistingRepoFile = async (path) => {
+  try {
+    const existing = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
+      owner,
+      repo,
+      path,
+      ref: branch,
+    });
+
+    if (Array.isArray(existing.data)) {
+      throw new Error(`Expected file but found directory at ${path}`);
+    }
+
+    return {
+      sha: existing.data.sha,
+      contentBase64: String(existing.data.content || '').replace(/\n/g, ''),
+    };
+  } catch (error) {
+    if (error?.status === 404) {
+      return null;
+    }
+
+    throw error;
+  }
+};
+
+const upsertRepoContent = async ({ path, contentBase64, message }) => {
+  const existing = await getExistingRepoFile(path);
+
+  if (existing && existing.contentBase64 === contentBase64) {
+    return {
+      skipped: true,
+      commitSha: null,
+      htmlUrl: null,
+    };
+  }
+
+  const response = await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
+    owner,
+    repo,
+    path,
+    branch,
+    message,
+    content: contentBase64,
+    sha: existing?.sha,
+  });
+
+  return {
+    skipped: false,
+    commitSha: response.data.commit.sha,
+    htmlUrl: response.data.commit.html_url,
+  };
+};
+
 const getOptionalGithubJson = async ({ owner, repo, path, ref }) => {
   try {
     const file = await getGithubFile({ owner, repo, path, ref });
@@ -116,7 +170,6 @@ const getOptionalGithubJson = async ({ owner, repo, path, ref }) => {
 const getSchemas = async () => {
   const [
     groupsSchemaFile,
-    groupVarsSchemaFile,
     buildTargetsSchemaFile,
     groupsUiSchema,
     buildTargetsUiSchema,
@@ -125,12 +178,6 @@ const getSchemas = async () => {
       owner: schemaOwner,
       repo: schemaRepo,
       path: `${schemaPath}/groups.schema.json`,
-      ref: schemaBranch,
-    }),
-    getGithubFile({
-      owner: schemaOwner,
-      repo: schemaRepo,
-      path: `${schemaPath}/group-vars.schema.json`,
       ref: schemaBranch,
     }),
     getGithubFile({
@@ -155,7 +202,6 @@ const getSchemas = async () => {
 
   return {
     groupsSchema: JSON.parse(groupsSchemaFile.content),
-    groupVarsSchema: JSON.parse(groupVarsSchemaFile.content),
     buildTargetsSchema: JSON.parse(buildTargetsSchemaFile.content),
     groupsUiSchema,
     buildTargetsUiSchema,
@@ -207,13 +253,31 @@ const validateGroupBackgroundImagePath = (group, domainName, domainIndex, groupI
 
 const validateGroupsPayload = async (content) => {
   const ajv = createAjv();
-  const { groupsSchema, groupVarsSchema, buildTargetsSchema } = await getSchemas();
+  const { groupsSchema, buildTargetsSchema } = await getSchemas();
   const groupsValidator = ajv.compile(groupsSchema);
-  const groupVarsValidator = ajv.compile(groupVarsSchema);
   const buildTargetsValidator = ajv.compile(buildTargetsSchema);
-  const validGroups = groupsValidator(content);
-  const validBuildTargets = buildTargetsValidator(content);
   const errors = [];
+
+  const domains = content && Array.isArray(content.domains) ? content.domains : [];
+  const groupsOnlyPayload = {
+    domains: domains.map((domainEntry) => ({
+      domain: domainEntry?.domain,
+      groups: Array.isArray(domainEntry?.groups) ? domainEntry.groups : [],
+    })),
+  };
+  const buildTargetsOnlyDomains = domains.filter(
+    (domainEntry) => Array.isArray(domainEntry?.build_targets) && domainEntry.build_targets.length > 0
+  );
+  const buildTargetsOnlyPayload = {
+    domains: buildTargetsOnlyDomains.map((domainEntry) => ({
+      domain: domainEntry?.domain,
+      build_targets: domainEntry.build_targets,
+    })),
+  };
+
+  const validGroups = groupsValidator(groupsOnlyPayload);
+  const validBuildTargets =
+    buildTargetsOnlyPayload.domains.length === 0 || buildTargetsValidator(buildTargetsOnlyPayload);
 
   if (!validGroups && groupsValidator.errors) {
     errors.push(
@@ -256,43 +320,22 @@ const validateGroupsPayload = async (content) => {
       );
 
       domainGroups.forEach((group, groupIndex) => {
-      const overlay = {
-        desktop: group.desktop,
-        printer: group.printer,
-        wifi: group.wifi,
-      };
-
-      const hasAnyOverlaySection = Object.values(overlay).some((section) => section !== undefined);
-
-      if (hasAnyOverlaySection) {
-        const validOverlay = groupVarsValidator(overlay);
-
-        if (!validOverlay && groupVarsValidator.errors) {
-          errors.push(
-            ...groupVarsValidator.errors.map((error) => ({
-              instancePath: `/domains/${domainIndex}/groups/${groupIndex}${error.instancePath}`,
-              message: error.message,
-            }))
-          );
-        }
-      }
-
-      const printerErrors = validateGroupDefaultPrinter(group, groupIndex).map((error) => ({
-        ...error,
-        instancePath: error.instancePath.replace(
-          `/groups/${groupIndex}`,
-          `/domains/${domainIndex}/groups/${groupIndex}`
-        ),
-      }));
-      errors.push(...printerErrors);
-      errors.push(
-        ...validateGroupBackgroundImagePath(
-          group,
-          String(domainEntry?.domain || ''),
-          domainIndex,
-          groupIndex
-        )
-      );
+        const printerErrors = validateGroupDefaultPrinter(group, groupIndex).map((error) => ({
+          ...error,
+          instancePath: error.instancePath.replace(
+            `/groups/${groupIndex}`,
+            `/domains/${domainIndex}/groups/${groupIndex}`
+          ),
+        }));
+        errors.push(...printerErrors);
+        errors.push(
+          ...validateGroupBackgroundImagePath(
+            group,
+            String(domainEntry?.domain || ''),
+            domainIndex,
+            groupIndex
+          )
+        );
       });
 
       domainBuildTargets.forEach((buildTarget, buildTargetIndex) => {
@@ -365,7 +408,7 @@ app.get('/api/schemas', async (_req, res) => {
 });
 
 app.post('/api/save', async (req, res) => {
-  const { path, content, message } = req.body ?? {};
+  const { path, content, message, assets } = req.body ?? {};
   const pathError = assertRepoPath(path);
 
   if (pathError) {
@@ -378,6 +421,28 @@ app.post('/api/save', async (req, res) => {
 
   if (!(path.endsWith('.json') || isYamlPath(path))) {
     return res.status(400).json({ error: 'Only .json, .yml, and .yaml files are allowed.' });
+  }
+
+  if (assets !== undefined) {
+    if (!Array.isArray(assets)) {
+      return res.status(400).json({ error: '"assets" must be an array when provided.' });
+    }
+
+    for (const asset of assets) {
+      const assetPath = asset?.path;
+      const assetPathError = assertRepoPath(assetPath);
+      if (assetPathError) {
+        return res.status(400).json({ error: `Invalid asset path: ${assetPathError}` });
+      }
+
+      if (!assetPath.startsWith('assets/')) {
+        return res.status(400).json({ error: `Asset path must start with assets/: ${assetPath}` });
+      }
+
+      if (typeof asset?.contentBase64 !== 'string' || asset.contentBase64.trim().length === 0) {
+        return res.status(400).json({ error: `Asset contentBase64 is required for ${assetPath}.` });
+      }
+    }
   }
 
   if (path === 'config/groups.yml' || path === 'config/groups.yaml') {
@@ -404,39 +469,47 @@ app.post('/api/save', async (req, res) => {
   const encodedContent = Buffer.from(serializedContent).toString('base64');
 
   try {
-    let sha;
+    const commitMessage =
+      typeof message === 'string' && message.trim() ? message.trim() : `Update ${path} via form`;
+    const uploadedAssets = [];
 
-    try {
-      const existing = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-        owner,
-        repo,
-        path,
-        ref: branch,
-      });
+    if (Array.isArray(assets) && assets.length > 0) {
+      for (const asset of assets) {
+        const assetResult = await upsertRepoContent({
+          path: asset.path,
+          contentBase64: asset.contentBase64,
+          message: `Upload ${asset.path} via form`,
+        });
 
-      if (!Array.isArray(existing.data)) {
-        sha = existing.data.sha;
-      }
-    } catch (error) {
-      if (error.status !== 404) {
-        throw error;
+        uploadedAssets.push({
+          path: asset.path,
+          skipped: assetResult.skipped,
+          commitSha: assetResult.commitSha,
+        });
       }
     }
 
-    const response = await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
-      owner,
-      repo,
+    const response = await upsertRepoContent({
       path,
-      branch,
-      message: typeof message === 'string' && message.trim() ? message.trim() : `Update ${path} via form`,
-      content: encodedContent,
-      sha,
+      contentBase64: encodedContent,
+      message: commitMessage,
     });
+
+    if (response.skipped) {
+      return res.status(200).json({
+        ok: true,
+        commitSha: null,
+        htmlUrl: null,
+        uploadedAssets,
+        message: 'No changes to commit.',
+      });
+    }
 
     return res.status(200).json({
       ok: true,
-      commitSha: response.data.commit.sha,
-      htmlUrl: response.data.commit.html_url,
+      commitSha: response.commitSha,
+      htmlUrl: response.htmlUrl,
+      uploadedAssets,
     });
   } catch (error) {
     console.error('Failed to save content to GitHub:', error);
