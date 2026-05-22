@@ -16,7 +16,8 @@ import {
 } from '@mui/material';
 import { ExpandMore } from '@mui/icons-material';
 
-const defaultPath = 'config/groups.yml';
+const groupsPath = 'config/groups.yml';
+const buildTargetsPath = 'config/build_targets.yml';
 
 const normalizeGroupName = (name) => {
   const value = String(name || '')
@@ -96,6 +97,50 @@ const createDefaultData = (domainName = 'default') => ({
     },
   ],
 });
+
+const mergeDomainPayloads = (groupsPayload, buildTargetsPayload, fallbackDomain = 'default') => {
+  const mergedDomains = [];
+  const groupsDomains = getDomains(groupsPayload);
+  const buildTargetsDomains = getDomains(buildTargetsPayload);
+
+  groupsDomains.forEach((domainEntry) => {
+    const domainName = domainEntry?.domain;
+    if (typeof domainName !== 'string' || domainName.length === 0) {
+      return;
+    }
+
+    mergedDomains.push({
+      domain: domainName,
+      groups: getDomainGroups(domainEntry),
+      build_targets: [],
+    });
+  });
+
+  buildTargetsDomains.forEach((domainEntry) => {
+    const domainName = domainEntry?.domain;
+    if (typeof domainName !== 'string' || domainName.length === 0) {
+      return;
+    }
+
+    const existing = mergedDomains.find((entry) => entry.domain === domainName);
+    if (existing) {
+      existing.build_targets = getDomainBuildTargets(domainEntry);
+      return;
+    }
+
+    mergedDomains.push({
+      domain: domainName,
+      groups: [],
+      build_targets: getDomainBuildTargets(domainEntry),
+    });
+  });
+
+  if (mergedDomains.length === 0) {
+    return createDefaultData(fallbackDomain);
+  }
+
+  return { domains: mergedDomains };
+};
 
 const ensureEditableDomain = (payload, domainName) => {
   const activeDomainName = String(domainName || '').trim() || 'default';
@@ -186,10 +231,21 @@ const sanitizePayload = (payload) => {
     return payload;
   }
 
-  const domains = getDomains(payload).map((domain) => ({
-    ...domain,
-    groups: getDomainGroups(domain).map((group) => sanitizeGroup(group)),
-  }));
+  const domains = getDomains(payload).map((domain) => {
+    const nextDomain = {
+      ...domain,
+      groups: getDomainGroups(domain).map((group) => sanitizeGroup(group)),
+    };
+    const buildTargets = getDomainBuildTargets(domain);
+
+    if (buildTargets.length > 0) {
+      nextDomain.build_targets = buildTargets;
+    } else {
+      delete nextDomain.build_targets;
+    }
+
+    return nextDomain;
+  });
 
   return {
     ...payload,
@@ -199,7 +255,7 @@ const sanitizePayload = (payload) => {
 
 const collectAssetPaths = (node, collector = new Set()) => {
   if (typeof node === 'string') {
-    if (node.startsWith('assets/')) {
+    if (node.startsWith('config/assets/')) {
       collector.add(node);
     }
     return collector;
@@ -294,7 +350,7 @@ const FilePathControl = withJsonFormsControlProps(
         ? options.assetPrefixTemplate
         : typeof options.assetPrefix === 'string'
           ? options.assetPrefix
-          : 'assets/{domain}/';
+          : 'config/assets/{domain}/';
     const resolvedPrefix = assetPrefixTemplate.includes('{domain}')
       ? assetPrefixTemplate.replaceAll('{domain}', domainFromConfig || 'default')
       : assetPrefixTemplate;
@@ -406,7 +462,6 @@ const applyRenameVisibility = (uiSchema, showRenameField) => {
 
 function App() {
   const [data, setData] = useState(createDefaultData());
-  const path = defaultPath;
   const [groupsSchema, setGroupsSchema] = useState(null);
   const [buildTargetsSchema, setBuildTargetsSchema] = useState(null);
   const [groupsUiSchemaTemplate, setGroupsUiSchemaTemplate] = useState(null);
@@ -504,7 +559,7 @@ function App() {
     [buildTargetsUiSchemaTemplate, buildTargetEditorSchema]
   );
 
-  const saveDisabled = useMemo(() => !path.trim() || domains.length === 0, [path, domains.length]);
+  const saveDisabled = useMemo(() => domains.length === 0, [domains.length]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -515,9 +570,12 @@ function App() {
       setValidationErrors([]);
 
       try {
-        const [schemasResponse, fileResponse] = await Promise.all([
+        const [schemasResponse, groupsResponse, buildTargetsResponse] = await Promise.all([
           fetch('/api/schemas', { signal: controller.signal }),
-          fetch(`/api/file?path=${encodeURIComponent(path)}`, { signal: controller.signal }),
+          fetch(`/api/file?path=${encodeURIComponent(groupsPath)}`, { signal: controller.signal }),
+          fetch(`/api/file?path=${encodeURIComponent(buildTargetsPath)}`, {
+            signal: controller.signal,
+          }),
         ]);
 
         const schemasResult = await schemasResponse.json();
@@ -538,25 +596,35 @@ function App() {
             : 'default';
         setCurrentDomain(nextCurrentDomain);
 
-        if (fileResponse.status === 404) {
-          setData(createDefaultData(nextCurrentDomain));
-          setStatus({
-            type: 'idle',
-            text: 'groups.yml not found yet. Using a starter object with one domain.',
-          });
-          return;
+        let groupsParsed = null;
+        let buildTargetsParsed = null;
+
+        if (groupsResponse.status !== 404) {
+          const groupsResult = await groupsResponse.json();
+          if (!groupsResponse.ok) {
+            throw new Error(groupsResult.error || 'Failed to load config/groups.yml');
+          }
+          groupsParsed = groupsResult.parsed;
         }
 
-        const fileResult = await fileResponse.json();
-        if (!fileResponse.ok) {
-          throw new Error(fileResult.error || 'Failed to load config file');
+        if (buildTargetsResponse.status !== 404) {
+          const buildTargetsResult = await buildTargetsResponse.json();
+          if (!buildTargetsResponse.ok) {
+            throw new Error(buildTargetsResult.error || 'Failed to load config/build_targets.yml');
+          }
+          buildTargetsParsed = buildTargetsResult.parsed;
         }
 
-        setData(ensureEditableDomain(fileResult.parsed, nextCurrentDomain));
+        const mergedData = mergeDomainPayloads(groupsParsed, buildTargetsParsed, nextCurrentDomain);
+
+        setData(ensureEditableDomain(mergedData, nextCurrentDomain));
         setPendingAssetUploads({});
         setSelectedGroupIndex(0);
         setSelectedBuildTargetIndex(0);
-        setStatus({ type: 'idle', text: 'Loaded config/groups.yml from GitHub.' });
+        setStatus({
+          type: 'idle',
+          text: 'Loaded config/groups.yml and config/build_targets.yml from GitHub.',
+        });
       } catch (error) {
         if (error.name === 'AbortError') {
           return;
@@ -576,7 +644,7 @@ function App() {
     return () => {
       controller.abort();
     };
-  }, [path]);
+  }, []);
 
   useEffect(() => {
     if (domains.length === 0) {
@@ -782,43 +850,94 @@ function App() {
     const assets = referencedAssetPaths
       .map((assetPath) => pendingAssetUploads[assetPath])
       .filter(Boolean);
+    const groupsContent = {
+      domains: getDomains(cleanedData).map((domainEntry) => ({
+        domain: domainEntry?.domain,
+        groups: getDomainGroups(domainEntry),
+      })),
+    };
+    const buildTargetsContent = {
+      domains: getDomains(cleanedData)
+        .map((domainEntry) => ({
+          domain: domainEntry?.domain,
+          build_targets: getDomainBuildTargets(domainEntry),
+        }))
+        .filter((domainEntry) => domainEntry.build_targets.length > 0),
+    };
     setData(cleanedData);
 
     try {
-      const response = await fetch('/api/save', {
+      const groupsResponse = await fetch('/api/save', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          path,
-          content: cleanedData,
+          path: groupsPath,
+          content: groupsContent,
           message,
           assets,
         }),
       });
 
-      const result = await response.json();
+      const groupsResult = await groupsResponse.json();
 
-      if (!response.ok) {
-        if (Array.isArray(result.validationErrors)) {
-          setValidationErrors(result.validationErrors);
+      if (!groupsResponse.ok) {
+        if (Array.isArray(groupsResult.validationErrors)) {
+          setValidationErrors(groupsResult.validationErrors);
         }
-        throw new Error(result.error || 'Save failed');
+        throw new Error(groupsResult.error || 'Save failed for config/groups.yml');
       }
 
-      const uploadedAssetCount = Array.isArray(result.uploadedAssets)
-        ? result.uploadedAssets.filter((asset) => !asset?.skipped).length
+      let buildTargetsResult = {
+        commitSha: null,
+        uploadedAssets: [],
+      };
+
+      if (buildTargetsContent.domains.length > 0) {
+        const buildTargetsResponse = await fetch('/api/save', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            path: buildTargetsPath,
+            content: buildTargetsContent,
+            message,
+          }),
+        });
+
+        buildTargetsResult = await buildTargetsResponse.json();
+
+        if (!buildTargetsResponse.ok) {
+          if (Array.isArray(buildTargetsResult.validationErrors)) {
+            setValidationErrors(buildTargetsResult.validationErrors);
+          }
+          throw new Error(buildTargetsResult.error || 'Save failed for config/build_targets.yml');
+        }
+      }
+
+      const uploadedAssetCount = Array.isArray(groupsResult.uploadedAssets)
+        ? groupsResult.uploadedAssets.filter((asset) => !asset?.skipped).length
         : 0;
+      const groupsCommit = groupsResult.commitSha ? groupsResult.commitSha.slice(0, 7) : null;
+      const buildTargetsCommit = buildTargetsResult.commitSha
+        ? buildTargetsResult.commitSha.slice(0, 7)
+        : null;
       const uploadedAssetsText =
         uploadedAssetCount > 0
           ? ` Uploaded assets: ${uploadedAssetCount}`
           : '';
 
+      const commitParts = [
+        groupsCommit ? `groups ${groupsCommit}` : null,
+        buildTargetsCommit ? `build_targets ${buildTargetsCommit}` : null,
+      ].filter(Boolean);
+
       setStatus({
         type: 'success',
-        text: result.commitSha
-          ? `Saved. Commit: ${result.commitSha.slice(0, 7)}.${uploadedAssetsText}`
+        text: commitParts.length > 0
+          ? `Saved. Commits: ${commitParts.join(', ')}.${uploadedAssetsText}`
           : `Saved.${uploadedAssetsText}`,
       });
       if (assets.length > 0) {
@@ -844,8 +963,8 @@ function App() {
         <p className="eyebrow">Schema-Driven Content Ops</p>
         <h1>Git-backed Groups and Build Targets Editor</h1>
         <p>
-          Edit config/groups.yml with domain-scoped groups and build targets, then validate against
-          all active schemas before saving to GitHub.
+          Edit domain-scoped groups and build targets, validate against active schemas, and save to
+          config/groups.yml and config/build_targets.yml in GitHub.
         </p>
       </section>
 

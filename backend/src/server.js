@@ -154,6 +154,33 @@ const upsertRepoContent = async ({ path, contentBase64, message }) => {
   };
 };
 
+const deleteRepoContent = async ({ path, message }) => {
+  const existing = await getExistingRepoFile(path);
+
+  if (!existing) {
+    return {
+      skipped: true,
+      commitSha: null,
+      htmlUrl: null,
+    };
+  }
+
+  const response = await octokit.request('DELETE /repos/{owner}/{repo}/contents/{path}', {
+    owner,
+    repo,
+    path,
+    branch,
+    message,
+    sha: existing.sha,
+  });
+
+  return {
+    skipped: false,
+    commitSha: response.data.commit.sha,
+    htmlUrl: response.data.commit.html_url,
+  };
+};
+
 const getOptionalGithubJson = async ({ owner, repo, path, ref }) => {
   try {
     const file = await getGithubFile({ owner, repo, path, ref });
@@ -215,9 +242,23 @@ const validateGroupDefaultPrinter = (group, index) => {
     return [];
   }
 
+  const collectPrinterNames = (value) => {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => (entry && typeof entry === 'object' ? entry.name : undefined))
+        .filter((name) => typeof name === 'string' && name.length > 0);
+    }
+
+    if (value && typeof value === 'object') {
+      return Object.keys(value);
+    }
+
+    return [];
+  };
+
   const defaultPrinter = printer.default_printer;
-  const keysNoPpd = printer.no_ppd ? Object.keys(printer.no_ppd) : [];
-  const keysWithPpd = printer.with_ppd ? Object.keys(printer.with_ppd) : [];
+  const keysNoPpd = collectPrinterNames(printer.no_ppd);
+  const keysWithPpd = collectPrinterNames(printer.with_ppd);
   const allKeys = new Set([...keysNoPpd, ...keysWithPpd]);
 
   if (!allKeys.has(defaultPrinter)) {
@@ -238,7 +279,7 @@ const validateGroupBackgroundImagePath = (group, domainName, domainIndex, groupI
     return [];
   }
 
-  const expectedPrefix = `assets/${domainName}/`;
+  const expectedPrefix = `config/assets/${domainName}/`;
   if (value.startsWith(expectedPrefix)) {
     return [];
   }
@@ -356,6 +397,58 @@ const validateGroupsPayload = async (content) => {
   return errors;
 };
 
+const validateBuildTargetsPayload = async (content) => {
+  const ajv = createAjv();
+  const { buildTargetsSchema } = await getSchemas();
+  const buildTargetsValidator = ajv.compile(buildTargetsSchema);
+  const errors = [];
+
+  const validBuildTargets = buildTargetsValidator(content);
+
+  if (!validBuildTargets && buildTargetsValidator.errors) {
+    errors.push(
+      ...buildTargetsValidator.errors.map((error) => ({
+        instancePath: error.instancePath,
+        message: error.message,
+      }))
+    );
+  }
+
+  if (content && Array.isArray(content.domains) && availableDomains.length > 0) {
+    const allowedDomains = new Set(availableDomains);
+    content.domains.forEach((domainEntry, domainIndex) => {
+      if (!allowedDomains.has(domainEntry?.domain)) {
+        errors.push({
+          instancePath: `/domains/${domainIndex}/domain`,
+          message: `must be one of configured AVAILABLE_DOMAINS (${availableDomains.join(', ')})`,
+        });
+      }
+    });
+  }
+
+  return errors;
+};
+
+const collectAssetPathsFromContent = (node, collector = new Set()) => {
+  if (typeof node === 'string') {
+    if (node.startsWith('config/assets/')) {
+      collector.add(node);
+    }
+    return collector;
+  }
+
+  if (Array.isArray(node)) {
+    node.forEach((item) => collectAssetPathsFromContent(item, collector));
+    return collector;
+  }
+
+  if (node && typeof node === 'object') {
+    Object.values(node).forEach((value) => collectAssetPathsFromContent(value, collector));
+  }
+
+  return collector;
+};
+
 app.get('/api/file', async (req, res) => {
   const path = req.query.path;
   const pathError = assertRepoPath(path);
@@ -435,8 +528,8 @@ app.post('/api/save', async (req, res) => {
         return res.status(400).json({ error: `Invalid asset path: ${assetPathError}` });
       }
 
-      if (!assetPath.startsWith('assets/')) {
-        return res.status(400).json({ error: `Asset path must start with assets/: ${assetPath}` });
+      if (!assetPath.startsWith('config/assets/')) {
+        return res.status(400).json({ error: `Asset path must start with config/assets/: ${assetPath}` });
       }
 
       if (typeof asset?.contentBase64 !== 'string' || asset.contentBase64.trim().length === 0) {
@@ -461,6 +554,22 @@ app.post('/api/save', async (req, res) => {
         details: error.message,
       });
     }
+  } else if (path === 'config/build_targets.yml' || path === 'config/build_targets.yaml') {
+    try {
+      const validationErrors = await validateBuildTargetsPayload(content);
+      if (validationErrors.length > 0) {
+        return res.status(400).json({
+          error: 'Schema validation failed.',
+          validationErrors,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to run build_targets schema validation:', error);
+      return res.status(500).json({
+        error: 'Failed to validate build_targets content against schemas.',
+        details: error.message,
+      });
+    }
   }
 
   const serializedContent = isYamlPath(path)
@@ -472,6 +581,35 @@ app.post('/api/save', async (req, res) => {
     const commitMessage =
       typeof message === 'string' && message.trim() ? message.trim() : `Update ${path} via form`;
     const uploadedAssets = [];
+    const deletedAssets = [];
+
+    if (path === 'config/groups.yml' || path === 'config/groups.yaml') {
+      try {
+        const existingFile = await getRepoFile(path);
+        const previousParsed = yaml.load(existingFile.content);
+        const previousAssets = collectAssetPathsFromContent(previousParsed);
+        const nextAssets = collectAssetPathsFromContent(content);
+
+        const removedAssets = Array.from(previousAssets).filter((assetPath) => !nextAssets.has(assetPath));
+
+        for (const assetPath of removedAssets) {
+          const deleteResult = await deleteRepoContent({
+            path: assetPath,
+            message: `Delete ${assetPath} (removed from ${path}) via form`,
+          });
+
+          deletedAssets.push({
+            path: assetPath,
+            skipped: deleteResult.skipped,
+            commitSha: deleteResult.commitSha,
+          });
+        }
+      } catch (error) {
+        if (error?.status !== 404) {
+          throw error;
+        }
+      }
+    }
 
     if (Array.isArray(assets) && assets.length > 0) {
       for (const asset of assets) {
@@ -501,6 +639,7 @@ app.post('/api/save', async (req, res) => {
         commitSha: null,
         htmlUrl: null,
         uploadedAssets,
+        deletedAssets,
         message: 'No changes to commit.',
       });
     }
@@ -510,6 +649,7 @@ app.post('/api/save', async (req, res) => {
       commitSha: response.commitSha,
       htmlUrl: response.htmlUrl,
       uploadedAssets,
+      deletedAssets,
     });
   } catch (error) {
     console.error('Failed to save content to GitHub:', error);

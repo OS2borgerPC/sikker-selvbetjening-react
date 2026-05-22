@@ -3,7 +3,7 @@
   "$id": "./groups.schema.json",
   "title": "Groups",
   "description": "Domain-scoped source of truth for group configurations. Edited via the web UI and read directly by the build pipeline.",
-  "$comment": "Cross-field membership check for printer.default_printer against dynamic no_ppd/with_ppd keys is enforced by scripts/validate-group-vars.py.",
+  "$comment": "Cross-field membership check for printer.default_printer against dynamic no_ppd/with_ppd keys is enforced by backend custom validation.",
   "type": "object",
   "additionalProperties": false,
   "required": ["domains"],
@@ -46,8 +46,8 @@
             "properties": {
               "background_image_file": {
                 "type": "string",
-                "pattern": "^assets/.+",
-                "description": "Asset path for the desktop background image. Values starting with assets/ are treated as file paths under config/assets."
+                "pattern": "^config/assets/[a-z][a-z0-9_-]*/.+",
+                "description": "Asset path for the desktop background image. Values starting with config/assets/ are treated as file paths under config/assets."
               },
               "shortcuts_in_menu": {
                 "type": "array",
@@ -67,14 +67,11 @@
             "additionalProperties": false,
             "properties": {
               "princh": {
-                "type": "object",
-                "description": "Collection of princh-integrated printers keyed by a logical printer ID.",
-                "minProperties": 1,
-                "propertyNames": {
-                  "pattern": "^[a-z][a-z0-9_-]*$"
-                },
-                "additionalProperties": {
-                  "$ref": "#/$defs/princh_printer"
+                "type": "array",
+                "description": "Collection of princh-integrated printers.",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/princh_printer_entry"
                 }
               },
               "default_printer": {
@@ -83,25 +80,19 @@
                 "pattern": "^[a-z][a-z0-9_-]*$"
               },
               "no_ppd": {
-                "type": "object",
-                "description": "Collection of printer profiles that do not require a PPD file. Keys are logical printer IDs.",
-                "minProperties": 1,
-                "propertyNames": {
-                  "pattern": "^[a-z][a-z0-9_-]*$"
-                },
-                "additionalProperties": {
-                  "$ref": "#/$defs/printer_profile"
+                "type": "array",
+                "description": "Collection of printer profiles that do not require a PPD file.",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/printer_profile_entry"
                 }
               },
               "with_ppd": {
-                "type": "object",
-                "description": "Collection of printer profiles that require a PPD file. Keys are logical printer IDs.",
-                "minProperties": 1,
-                "propertyNames": {
-                  "pattern": "^[a-z][a-z0-9_-]*$"
-                },
-                "additionalProperties": {
-                  "$ref": "#/$defs/printer_profile_with_ppd"
+                "type": "array",
+                "description": "Collection of printer profiles that require a PPD file.",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/printer_profile_with_ppd_entry"
                 }
               }
             }
@@ -137,6 +128,108 @@
     }
   },
   "$defs": {
+    "princh_printer_entry": {
+      "type": "object",
+      "description": "Princh printer registration entry.",
+      "additionalProperties": false,
+      "required": ["name", "display_name", "id"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Logical printer identifier used by default_printer.",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable printer name shown in Princh-related UX.",
+          "minLength": 1
+        },
+        "id": {
+          "description": "Printer identifier provided by Princh.",
+          "oneOf": [
+            { "type": "integer" },
+            { "type": "string", "minLength": 1 }
+          ]
+        }
+      }
+    },
+    "printer_profile_entry": {
+      "type": "object",
+      "description": "Common printer profile object.",
+      "additionalProperties": false,
+      "required": ["name", "display_name", "ip"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Logical printer identifier used by default_printer.",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable printer name shown to users or used by the target system.",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional longer description of where the printer is located or how it is used.",
+          "minLength": 1
+        },
+        "ip": {
+          "type": "string",
+          "description": "IPv4 address of the printer that the client should use.",
+          "format": "ipv4"
+        },
+        "protocol": {
+          "type": "string",
+          "description": "Optional transport protocol used to reach the printer, for example ipp or socket.",
+          "minLength": 1
+        },
+        "settings": {
+          "$ref": "#/$defs/printer_settings"
+        }
+      }
+    },
+    "printer_profile_with_ppd_entry": {
+      "type": "object",
+      "description": "Printer profile that requires a PPD file.",
+      "additionalProperties": false,
+      "required": ["name", "display_name", "ip", "ppd_file"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Logical printer identifier used by default_printer.",
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable printer name shown to users or used by the target system.",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional longer description of where the printer is located or how it is used.",
+          "minLength": 1
+        },
+        "ip": {
+          "type": "string",
+          "description": "IPv4 address of the printer that the client should use.",
+          "format": "ipv4"
+        },
+        "protocol": {
+          "type": "string",
+          "description": "Optional transport protocol used to reach the printer, for example ipp or socket.",
+          "minLength": 1
+        },
+        "settings": {
+          "$ref": "#/$defs/printer_settings"
+        },
+        "ppd_file": {
+          "type": "string",
+          "pattern": "^config/assets/[a-z][a-z0-9_-]*/.+",
+          "description": "Asset path to a PPD file. Values starting with config/assets/ are treated as file paths under config/assets."
+        }
+      }
+    },
     "princh_printer": {
       "type": "object",
       "description": "Princh printer registration entry.",
@@ -219,7 +312,7 @@
         },
         "ppd_file": {
           "type": "string",
-          "pattern": "^assets/.+",
+          "pattern": "^assets/[a-z][a-z0-9_-]*/.+",
           "description": "Asset path to a PPD file. Values starting with assets/ are treated as file paths under config/assets."
         }
       }

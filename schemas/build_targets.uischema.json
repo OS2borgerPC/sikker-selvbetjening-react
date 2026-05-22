@@ -1,0 +1,21 @@
+{
+  "type": "VerticalLayout",
+  "elements": [
+    {
+      "type": "Control",
+      "scope": "#/properties/name"
+    },
+    {
+      "type": "Control",
+      "scope": "#/properties/description"
+    },
+    {
+      "type": "Control",
+      "scope": "#/properties/groups"
+    },
+    {
+      "type": "Control",
+      "scope": "#/properties/image_name"
+    }
+  ]
+}

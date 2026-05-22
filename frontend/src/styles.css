@@ -97,6 +97,48 @@ input {
   background: rgba(255, 255, 255, 0.65);
 }
 
+.form-wrap .MuiAccordion-root {
+  border: 1px solid rgba(20, 33, 61, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 255, 0.95));
+  box-shadow: 0 4px 14px rgba(20, 33, 61, 0.07);
+  margin-bottom: 0.8rem;
+  overflow: hidden;
+}
+
+.form-wrap .MuiAccordion-root::before {
+  display: none;
+}
+
+.form-wrap .MuiAccordionSummary-root {
+  min-height: 52px;
+  border-bottom: 1px solid rgba(20, 33, 61, 0.12);
+  background: linear-gradient(90deg, rgba(255, 90, 54, 0.08), rgba(20, 33, 61, 0.03));
+}
+
+.form-wrap .MuiAccordionSummary-content {
+  margin: 0.65rem 0;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.form-wrap .MuiAccordionDetails-root {
+  padding: 0.9rem 1rem 1rem;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.form-wrap .MuiAccordion-root:last-of-type {
+  margin-bottom: 0;
+}
+
+.form-wrap .MuiAccordionDetails-root > .MuiGrid-container {
+  gap: 0.5rem;
+}
+
+.form-wrap .MuiFormControl-root {
+  background: rgba(255, 255, 255, 0.9);
+}
+
 .group-editor {
   display: grid;
   grid-template-columns: minmax(220px, 280px) 1fr;
