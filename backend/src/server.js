@@ -186,6 +186,25 @@ const validateGroupDefaultPrinter = (group, index) => {
   return [];
 };
 
+const validateGroupBackgroundImagePath = (group, domainName, domainIndex, groupIndex) => {
+  const value = group?.desktop?.background_image_file;
+  if (typeof value !== 'string' || value.length === 0) {
+    return [];
+  }
+
+  const expectedPrefix = `assets/${domainName}/`;
+  if (value.startsWith(expectedPrefix)) {
+    return [];
+  }
+
+  return [
+    {
+      instancePath: `/domains/${domainIndex}/groups/${groupIndex}/desktop/background_image_file`,
+      message: `must start with ${expectedPrefix}`,
+    },
+  ];
+};
+
 const validateGroupsPayload = async (content) => {
   const ajv = createAjv();
   const { groupsSchema, groupVarsSchema, buildTargetsSchema } = await getSchemas();
@@ -266,6 +285,14 @@ const validateGroupsPayload = async (content) => {
         ),
       }));
       errors.push(...printerErrors);
+      errors.push(
+        ...validateGroupBackgroundImagePath(
+          group,
+          String(domainEntry?.domain || ''),
+          domainIndex,
+          groupIndex
+        )
+      );
       });
 
       domainBuildTargets.forEach((buildTarget, buildTargetIndex) => {

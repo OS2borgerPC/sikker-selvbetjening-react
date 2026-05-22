@@ -246,14 +246,39 @@ const collapsibleGroupRendererEntry = {
 };
 
 const FilePathControl = withJsonFormsControlProps(
-  ({ data, path, handleChange, uischema, label, description, errors, enabled, visible, required }) => {
+  ({
+    data,
+    path,
+    handleChange,
+    uischema,
+    label,
+    description,
+    errors,
+    enabled,
+    visible,
+    required,
+    config,
+  }) => {
     if (!visible) {
       return null;
     }
 
     const options = uischema?.options || {};
     const accept = typeof options.accept === 'string' ? options.accept : '*/*';
-    const assetPrefix = typeof options.assetPrefix === 'string' ? options.assetPrefix : 'assets/';
+    const domainFromConfig =
+      typeof config?.currentDomain === 'string' && config.currentDomain.trim()
+        ? config.currentDomain.trim()
+        : '';
+    const assetPrefixTemplate =
+      typeof options.assetPrefixTemplate === 'string'
+        ? options.assetPrefixTemplate
+        : typeof options.assetPrefix === 'string'
+          ? options.assetPrefix
+          : 'assets/{domain}/';
+    const resolvedPrefix = assetPrefixTemplate.includes('{domain}')
+      ? assetPrefixTemplate.replaceAll('{domain}', domainFromConfig || 'default')
+      : assetPrefixTemplate;
+    const assetPrefix = resolvedPrefix.endsWith('/') ? resolvedPrefix : `${resolvedPrefix}/`;
     const hasErrors = Boolean(errors && errors.length > 0);
 
     const handleFilePick = (event) => {
@@ -262,8 +287,7 @@ const FilePathControl = withJsonFormsControlProps(
         return;
       }
 
-      const normalizedPrefix = assetPrefix.endsWith('/') ? assetPrefix : `${assetPrefix}/`;
-      handleChange(path, `${normalizedPrefix}${file.name}`);
+      handleChange(path, `${assetPrefix}${file.name}`);
       event.target.value = '';
     };
 
@@ -414,6 +438,10 @@ function App() {
   const renderers = useMemo(
     () => [filePathControlRendererEntry, collapsibleGroupRendererEntry, ...materialRenderers],
     []
+  );
+  const jsonFormsConfig = useMemo(
+    () => ({ currentDomain: selectedDomain?.domain || currentDomain || 'default' }),
+    [selectedDomain, currentDomain]
   );
   const groupEditorUiSchema = useMemo(() => {
     const baseUiSchema = groupsUiSchemaTemplate || buildFallbackUiSchema(groupEditorSchema);
@@ -841,6 +869,7 @@ function App() {
                           schema={groupEditorSchema}
                           uischema={groupEditorUiSchema || undefined}
                           data={selectedGroup}
+                          config={jsonFormsConfig}
                           renderers={renderers}
                           cells={materialCells}
                           onChange={({ data: updatedGroup }) => handleGroupChange(updatedGroup)}
@@ -920,6 +949,7 @@ function App() {
                         schema={buildTargetEditorSchema}
                         uischema={buildTargetEditorUiSchema || undefined}
                         data={selectedBuildTarget}
+                        config={jsonFormsConfig}
                         renderers={renderers}
                         cells={materialCells}
                         onChange={({ data: updatedTarget }) => handleBuildTargetChange(updatedTarget)}
