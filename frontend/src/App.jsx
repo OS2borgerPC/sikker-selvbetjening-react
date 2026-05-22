@@ -1,9 +1,19 @@
 import { JsonForms } from '@jsonforms/react';
 import { materialCells, materialRenderers } from '@jsonforms/material-renderers';
 import { useEffect, useMemo, useState } from 'react';
-import { JsonFormsDispatch, withJsonFormsLayoutProps } from '@jsonforms/react';
-import { rankWith, uiTypeIs } from '@jsonforms/core';
-import { Accordion, AccordionDetails, AccordionSummary, Grid } from '@mui/material';
+import { JsonFormsDispatch, withJsonFormsControlProps, withJsonFormsLayoutProps } from '@jsonforms/react';
+import { isStringControl, optionIs, rankWith, uiTypeIs, and } from '@jsonforms/core';
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Box,
+  Button,
+  FormHelperText,
+  FormLabel,
+  Grid,
+  TextField,
+} from '@mui/material';
 import { ExpandMore } from '@mui/icons-material';
 
 const defaultPath = 'config/groups.yml';
@@ -235,7 +245,63 @@ const collapsibleGroupRendererEntry = {
   renderer: CollapsibleGroupLayoutRenderer,
 };
 
-const buildGroupUiSchema = (schema, showRenameField) => {
+const FilePathControl = withJsonFormsControlProps(
+  ({ data, path, handleChange, uischema, label, description, errors, enabled, visible, required }) => {
+    if (!visible) {
+      return null;
+    }
+
+    const options = uischema?.options || {};
+    const accept = typeof options.accept === 'string' ? options.accept : '*/*';
+    const assetPrefix = typeof options.assetPrefix === 'string' ? options.assetPrefix : 'assets/';
+    const hasErrors = Boolean(errors && errors.length > 0);
+
+    const handleFilePick = (event) => {
+      const file = event.target.files?.[0];
+      if (!file) {
+        return;
+      }
+
+      const normalizedPrefix = assetPrefix.endsWith('/') ? assetPrefix : `${assetPrefix}/`;
+      handleChange(path, `${normalizedPrefix}${file.name}`);
+      event.target.value = '';
+    };
+
+    return (
+      <Box sx={{ marginBottom: 2 }}>
+        <FormLabel>
+          {label}
+          {required ? ' *' : ''}
+        </FormLabel>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', marginTop: 0.75 }}>
+          <TextField
+            fullWidth
+            value={data || ''}
+            onChange={(event) => handleChange(path, event.target.value)}
+            disabled={!enabled}
+            error={hasErrors}
+          />
+          <Button component="label" variant="outlined" disabled={!enabled}>
+            Browse
+            <input hidden type="file" accept={accept} onChange={handleFilePick} />
+          </Button>
+        </Box>
+        {hasErrors ? (
+          <FormHelperText error>{errors}</FormHelperText>
+        ) : description ? (
+          <FormHelperText>{description}</FormHelperText>
+        ) : null}
+      </Box>
+    );
+  }
+);
+
+const filePathControlRendererEntry = {
+  tester: rankWith(5, and(isStringControl, optionIs('widget', 'file'))),
+  renderer: FilePathControl,
+};
+
+const buildFallbackUiSchema = (schema) => {
   if (!schema || typeof schema !== 'object') {
     return null;
   }
@@ -243,17 +309,41 @@ const buildGroupUiSchema = (schema, showRenameField) => {
   const properties = schema.properties && typeof schema.properties === 'object' ? schema.properties : {};
   const keys = Object.keys(properties);
   const orderedKeys = ['name', ...keys.filter((key) => key !== 'name')];
-  const elements = orderedKeys
-    .filter((key) => (key === 'name' ? showRenameField : true))
-    .map((key) => ({
-      type: 'Control',
-      scope: `#/properties/${key}`,
-    }));
 
   return {
     type: 'VerticalLayout',
-    elements,
+    elements: orderedKeys.map((key) => ({
+      type: 'Control',
+      scope: `#/properties/${key}`,
+    })),
   };
+};
+
+const applyRenameVisibility = (uiSchema, showRenameField) => {
+  if (!uiSchema || typeof uiSchema !== 'object') {
+    return null;
+  }
+
+  if (showRenameField) {
+    return uiSchema;
+  }
+
+  const removeNameControl = (node) => {
+    if (!node || typeof node !== 'object') {
+      return node;
+    }
+
+    const nextNode = { ...node };
+    if (Array.isArray(nextNode.elements)) {
+      nextNode.elements = nextNode.elements
+        .filter((element) => !(element?.type === 'Control' && element?.scope === '#/properties/name'))
+        .map((element) => removeNameControl(element));
+    }
+
+    return nextNode;
+  };
+
+  return removeNameControl(uiSchema);
 };
 
 function App() {
@@ -261,6 +351,8 @@ function App() {
   const path = defaultPath;
   const [groupsSchema, setGroupsSchema] = useState(null);
   const [buildTargetsSchema, setBuildTargetsSchema] = useState(null);
+  const [groupsUiSchemaTemplate, setGroupsUiSchemaTemplate] = useState(null);
+  const [buildTargetsUiSchemaTemplate, setBuildTargetsUiSchemaTemplate] = useState(null);
   const [availableDomains, setAvailableDomains] = useState([]);
   const [currentDomain, setCurrentDomain] = useState('default');
   const [message, setMessage] = useState('');
@@ -320,12 +412,16 @@ function App() {
   }, [buildTargetItemSchema]);
 
   const renderers = useMemo(
-    () => [collapsibleGroupRendererEntry, ...materialRenderers],
+    () => [filePathControlRendererEntry, collapsibleGroupRendererEntry, ...materialRenderers],
     []
   );
-  const groupEditorUiSchema = useMemo(
-    () => buildGroupUiSchema(groupEditorSchema, showRenameField),
-    [groupEditorSchema, showRenameField]
+  const groupEditorUiSchema = useMemo(() => {
+    const baseUiSchema = groupsUiSchemaTemplate || buildFallbackUiSchema(groupEditorSchema);
+    return applyRenameVisibility(baseUiSchema, showRenameField);
+  }, [groupsUiSchemaTemplate, groupEditorSchema, showRenameField]);
+  const buildTargetEditorUiSchema = useMemo(
+    () => buildTargetsUiSchemaTemplate || buildFallbackUiSchema(buildTargetEditorSchema),
+    [buildTargetsUiSchemaTemplate, buildTargetEditorSchema]
   );
 
   const saveDisabled = useMemo(() => !path.trim() || domains.length === 0, [path, domains.length]);
@@ -351,6 +447,8 @@ function App() {
 
         setGroupsSchema(schemasResult.groupsSchema);
         setBuildTargetsSchema(schemasResult.buildTargetsSchema);
+        setGroupsUiSchemaTemplate(schemasResult.groupsUiSchema || null);
+        setBuildTargetsUiSchemaTemplate(schemasResult.buildTargetsUiSchema || null);
         setAvailableDomains(
           Array.isArray(schemasResult.availableDomains) ? schemasResult.availableDomains : []
         );
@@ -820,6 +918,7 @@ function App() {
                       </p>
                       <JsonForms
                         schema={buildTargetEditorSchema}
+                        uischema={buildTargetEditorUiSchema || undefined}
                         data={selectedBuildTarget}
                         renderers={renderers}
                         cells={materialCells}

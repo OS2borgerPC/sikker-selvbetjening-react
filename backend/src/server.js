@@ -29,6 +29,10 @@ const schemaRepo = process.env.GITHUB_SCHEMA_REPO || 'sikker-selvbetjening';
 const schemaBranch = process.env.GITHUB_SCHEMA_BRANCH || 'main';
 const schemaPath =
   process.env.GITHUB_SCHEMA_PATH || 'system_files/usr/share/sikker-selvbetjening/schemas';
+const uiSchemaPath = process.env.GITHUB_UI_SCHEMA_PATH || schemaPath;
+const groupsUiSchemaFileName = process.env.GROUPS_UI_SCHEMA_FILE || 'groups.uischema.json';
+const buildTargetsUiSchemaFileName =
+  process.env.BUILD_TARGETS_UI_SCHEMA_FILE || 'build_targets.uischema.json';
 const availableDomains = String(process.env.AVAILABLE_DOMAINS || '')
   .split(',')
   .map((domain) => domain.trim())
@@ -96,8 +100,27 @@ const getRepoFile = async (path) =>
     ref: branch,
   });
 
+const getOptionalGithubJson = async ({ owner, repo, path, ref }) => {
+  try {
+    const file = await getGithubFile({ owner, repo, path, ref });
+    return JSON.parse(file.content);
+  } catch (error) {
+    if (error?.status === 404) {
+      return null;
+    }
+
+    throw error;
+  }
+};
+
 const getSchemas = async () => {
-  const [groupsSchemaFile, groupVarsSchemaFile, buildTargetsSchemaFile] = await Promise.all([
+  const [
+    groupsSchemaFile,
+    groupVarsSchemaFile,
+    buildTargetsSchemaFile,
+    groupsUiSchema,
+    buildTargetsUiSchema,
+  ] = await Promise.all([
     getGithubFile({
       owner: schemaOwner,
       repo: schemaRepo,
@@ -116,12 +139,26 @@ const getSchemas = async () => {
       path: `${schemaPath}/build_targets.schema.json`,
       ref: schemaBranch,
     }),
+    getOptionalGithubJson({
+      owner: schemaOwner,
+      repo: schemaRepo,
+      path: `${uiSchemaPath}/${groupsUiSchemaFileName}`,
+      ref: schemaBranch,
+    }),
+    getOptionalGithubJson({
+      owner: schemaOwner,
+      repo: schemaRepo,
+      path: `${uiSchemaPath}/${buildTargetsUiSchemaFileName}`,
+      ref: schemaBranch,
+    }),
   ]);
 
   return {
     groupsSchema: JSON.parse(groupsSchemaFile.content),
     groupVarsSchema: JSON.parse(groupVarsSchemaFile.content),
     buildTargetsSchema: JSON.parse(buildTargetsSchemaFile.content),
+    groupsUiSchema,
+    buildTargetsUiSchema,
   };
 };
 

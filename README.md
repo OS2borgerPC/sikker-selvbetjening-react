@@ -50,6 +50,9 @@ Optional values:
 - `GITHUB_SCHEMA_REPO` (default: `sikker-selvbetjening`)
 - `GITHUB_SCHEMA_BRANCH` (default: `main`)
 - `GITHUB_SCHEMA_PATH` (default: `system_files/usr/share/sikker-selvbetjening/schemas`)
+- `GITHUB_UI_SCHEMA_PATH` (default: same as `GITHUB_SCHEMA_PATH`)
+- `GROUPS_UI_SCHEMA_FILE` (default: `groups.uischema.json`)
+- `BUILD_TARGETS_UI_SCHEMA_FILE` (default: `build_targets.uischema.json`)
 
 By default, schemas are fetched from:
 
